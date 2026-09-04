@@ -96,6 +96,9 @@ export function TerminalPanel({ cwd, onClose, fillHeight = false }: TerminalPane
     if (!el) return;
 
     let disposed = false;
+    // Set inside getXterm().then(); disposed on unmount. Make it a let so the
+    // cleanup closure can both assign and read it (untyped var assigned later).
+    let onDataSubscription: { dispose: () => void } | null | undefined;
 
     // fitCurrent is set once xterm loads; the resize listener / ResizeObserver
     // below call it on every resize and are registered synchronously so they are
@@ -135,7 +138,11 @@ export function TerminalPanel({ cwd, onClose, fillHeight = false }: TerminalPane
       termRef.current = term;
       fitAddonRef.current = fit;
 
-      term.onData((data) => {
+      // Keep the onData subscription for explicit disposal on unmount. Even
+      // though term.dispose() normally tears down internals, disposing the
+      // returned IDisposable guarantees the handler never fires into the
+      // closed-over `write` after the panel is gone.
+      onDataSubscription = term.onData((data) => {
         void write(data);
       });
 
@@ -158,6 +165,9 @@ export function TerminalPanel({ cwd, onClose, fillHeight = false }: TerminalPane
     return () => {
       cancelled = true;
       disposed = true;
+      // Detach the onData handler first so it can never fire after teardown.
+      onDataSubscription?.dispose();
+      onDataSubscription = null;
       observer.disconnect();
       window.removeEventListener("resize", fitCurrent);
       // Tear down anything that xterm load created (if it resolved before unmount).
