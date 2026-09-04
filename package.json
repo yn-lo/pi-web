@@ -40,7 +40,7 @@
     "check:layer": "node .harness/scripts/layer-check.mjs",
     "check:dead": "knip --no-progress",
     "check:audit": "npm audit --audit-level=high",
-    "check": "npm run lint && npm run typecheck && npm run check:layer && npm run check:dup",
+    "check": "npm run lint && npm run typecheck && npm run check:layer && npm run check:dup && npm run check:dead",
     "check:full": "npm run check && npm test",
     "release": "npm version patch --no-git-tag-version && npm run build && npm publish --access public"
   },

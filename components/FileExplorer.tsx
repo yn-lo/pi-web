@@ -125,6 +125,9 @@ const GIT_STATUS_COLORS: Record<GitFileStatusKind, string> = {
 };
 
 const gitToolButtonStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
   height: 22,
   padding: "0 8px",
   border: "1px solid var(--border)",
@@ -1014,6 +1017,15 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
             <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
               <button
                 type="button"
+                disabled={gitBusy}
+                onClick={() => runGitAction("pull")}
+                style={{ ...gitToolButtonStyle }}
+              >
+                {t("git.pull")}
+              </button>
+              <div style={{ flex: 1 }} />
+              <button
+                type="button"
                 disabled={gitBusy || justCommitted}
                 onClick={generateCommitMessage}
                 title={t("git.generateCommit")}
@@ -1027,15 +1039,6 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
                   <circle cx="4" cy="20" r="2" />
                 </svg>
               </button>
-              <button
-                type="button"
-                disabled={gitBusy}
-                onClick={() => runGitAction("pull")}
-                style={{ ...gitToolButtonStyle }}
-              >
-                {t("git.pull")}
-              </button>
-              <div style={{ flex: 1 }} />
               <button
                 type="button"
                 disabled={gitBusy || (!justCommitted && !commitMessage.trim())}

@@ -15,8 +15,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Gate (lint + typecheck + layer + dup)
+      - name: Gate (lint + typecheck + layer + dup + dead)
         run: npm run check
-      - name: Tests (existing failures tracked, non-blocking)
+      - name: Tests
         run: npm test
-        continue-on-error: true

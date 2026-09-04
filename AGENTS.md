@@ -12,13 +12,15 @@ npm run dev   # port 30141
 # 快速迭代
 npm run lint && npm run typecheck
 
-# 提交前必跑：lint + typecheck + layer + dup
-npm run check
+# 提交前必跑：lint + typecheck + layer + dup + dead + test
+npm run check:full
 ```
 
 - `npm run check:layer`：分层依赖门禁，规则与设计意图见 `.harness/specs/architecture/boundaries.md`。
 - `npm run check:dup`：jscpd 重复代码门禁；阈值为 8%，配置位于 `.jscpd.json`。
-- `npm test` 现有约 35 个与最新源码结构漂移有关的既有失败；修复前不要以 `npm run check:full` 作为提交门禁。
+- `npm run check:dead`：knip 死代码门禁（files/依赖维度），配置见 `knip.json`。
+- `npm run check:audit`：`npm audit --audit-level=high` 报告，不阻断。
+- 测试说明：`.test.mjs` 若用 `jiti.import` 加载含 React context 的模块（如 `useI18n`），**必须用与源码一致的无扩展名 specifier（`@/hooks/useI18n`）**，否则 jiti 会建出两个模块实例、context 对不上（历史根因）。读源码做结构断言时先 `.replace(/\r\n/g, "\n")` 归一化行尾（仓库为 CRLF）。
 - **开发期间禁止运行 `next build`**：它会污染 `.next/` 并破坏 `npm run dev`。
 - eslint 的 `no-magic-numbers` 为报告级 warn
 
