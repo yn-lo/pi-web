@@ -12,6 +12,8 @@ export interface GitFileStatus {
   code: "M" | "A" | "D" | "R" | "U" | "C";
   indexStatus: string;
   worktreeStatus: string;
+  /** Whether the change is staged (added to the index). */
+  staged: boolean;
 }
 
 export interface GitStatusResponse {

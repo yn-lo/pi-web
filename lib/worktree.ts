@@ -49,7 +49,8 @@ export function invalidateProjectCache(): void {
   globalThis.__piProjectCache?.clear();
 }
 
-async function git(cwd: string, args: string[]): Promise<string> {
+/** Run a git command against a cwd; rejects with the git stderr on failure. */
+export async function git(cwd: string, args: string[]): Promise<string> {
   const { stdout } = await execFileAsync("git", ["-C", cwd, ...args], {
     timeout: 10_000,
     maxBuffer: 1024 * 1024,

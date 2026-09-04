@@ -124,6 +124,7 @@ export async function getGitStatus(cwd: string): Promise<GitStatusResponse> {
       ...classified,
       indexStatus: entry.indexStatus,
       worktreeStatus: entry.worktreeStatus,
+      staged: entry.indexStatus !== " " && entry.indexStatus !== "?",
     }];
   });
   const untrackedAdditions = files.reduce(

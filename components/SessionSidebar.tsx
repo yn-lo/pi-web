@@ -1784,6 +1784,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                 onUploadBusyChange={setExplorerUploadBusy}
                 changesCollapsed={changesCollapsed}
                 onChangesCountChange={setChangesCount}
+                sessionId={selectedSessionId}
               />
             </div>
           )}
