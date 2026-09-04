@@ -64,13 +64,18 @@ PORT="${PORT:-30141}"
 
 if [ -f "$APP_DIR/.env" ]; then
   # .env 存在 -> 整体重写，任何变量改动都生效。
+  if [ -z "$PW" ]; then
+    # .env 未提供密码 -> 自动生成，避免留下空密码（否则认证实际关闭且无感知）。
+    PW="$(openssl rand -base64 24 | tr -d '\n')"
+  fi
   : > "$ENV_FILE"
   printf 'PI_WEB_PASSWORD=%s\nPI_WEB_ALLOWED_HOSTS=%s\nPI_WEB_USERNAME=%s\nPORT=%s\n' \
     "$PW" "$DOMAIN" "$AUTH_USER" "$PORT" >> "$ENV_FILE"
-  if [ -n "$PW" ]; then
+  if [ -n "${PI_WEB_PASSWORD:-}" ]; then
     echo "  已用 .env 更新配置（密码按你在 .env 中的设置）。"
   else
-    echo "  注意：.env 未设置 PI_WEB_PASSWORD，已生成空密码占位（将无法登录）。"
+    echo "  注意：.env 未设置 PI_WEB_PASSWORD，已自动生成随机密码，请记下仅此一次："
+    echo "  >>>  $PW  <<<"
   fi
 elif [ -f "$ENV_FILE" ]; then
   echo "  未提供 .env 且 $ENV_FILE 已存在，保留现有配置。"
