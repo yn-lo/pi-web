@@ -1,6 +1,7 @@
 {
   "$schema": "https://unpkg.com/knip@5/schema.json",
   "include": ["files", "dependencies", "unlisted", "binaries"],
+  "ignore": ["lib/session-tree.ts"],
   "entry": ["bin/*.js", "app/**/*.{ts,tsx}", "**/*.test.mjs"],
   "project": [
     "app/**/*.{ts,tsx}",

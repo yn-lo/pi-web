@@ -16,14 +16,6 @@ npm run lint && npm run typecheck
 npm run check:full
 ```
 
-- `npm run check:layer`：分层依赖门禁，规则与设计意图见 `.harness/specs/architecture/boundaries.md`。
-- `npm run check:dup`：jscpd 重复代码门禁；阈值为 8%，配置位于 `.jscpd.json`。
-- `npm run check:dead`：knip 死代码门禁（files/依赖维度），配置见 `knip.json`。
-- `npm run check:audit`：`npm audit --audit-level=high` 报告，不阻断。
-- 测试说明：`.test.mjs` 若用 `jiti.import` 加载含 React context 的模块（如 `useI18n`），**必须用与源码一致的无扩展名 specifier（`@/hooks/useI18n`）**，否则 jiti 会建出两个模块实例、context 对不上（历史根因）。读源码做结构断言时先 `.replace(/\r\n/g, "\n")` 归一化行尾（仓库为 CRLF）。
-- **开发期间禁止运行 `next build`**：它会污染 `.next/` 并破坏 `npm run dev`。
-- eslint 的 `no-magic-numbers` 为报告级 warn
-
 ## 知识导航
 
 | 需要处理… | 查阅 |
@@ -34,6 +26,7 @@ npm run check:full
 | 模型选择、`enabledModels`、OAuth 或 API Key | `.harness/knowledge/model-configuration.md` |
 | worktree、Windows 路径或文件访问安全 | `.harness/knowledge/worktrees-and-files.md` |
 | Pi package 插件或技能 | `.harness/knowledge/extensions.md` |
+| 内置子代理、chat-only 工具选择 | `.harness/knowledge/subagents.md` |
 | React 组件、hooks、音效或 CSS 变量 | `.harness/knowledge/frontend-ui.md` |
 
 ## 代码导航
@@ -58,6 +51,8 @@ hooks/         会话流式状态、音效、拖放、主题和响应式交互
 - `/api/files` 只能在已授权根目录内访问；不得绕过 `lib/path-security.ts`。
 - 对 Git 返回的 Windows 路径使用 `toNativePath()` 和 `samePath()`，不得直接用 `===` 比较。
 - 文件浏览是只读的；浏览历史不得创建 AgentSession。
+- 禁止使用魔法值
+- 关键的功能采用TDD（测试驱动开发）流程进行开发
 
 
 ## Ponytail 开发原则

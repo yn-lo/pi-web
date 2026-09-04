@@ -28,4 +28,20 @@ Pi 文件格式中 tool call 为 `{ type: "toolCall", id, name, arguments }`，U
 
 新会话通过 `POST /api/agent/new` 传 `toolNames[]`。既有会话挂载后用 `get_tools` 和 `getPresetFromTools()` 推断实时预设；不能使用浏览器本地偏好覆盖。
 
-选择“无工具”时传空 allow-list，并在启动、重载和资源发现后清空 `agent.state.systemPrompt`。浏览器 `localStorage` 中的工具偏好只初始化新会话。
+选择“无工具”（Chat only）时传空 allow-list，并在启动、重载和资源发现后清空 `agent.state.systemPrompt`。浏览器 `localStorage` 中的工具偏好只初始化新会话。
+
+### Chat-only 的持久化与边界（ADR 0002）
+
+自定义工具选择的持久化经版本化 `pi-web:tool-selection` 条目写入 JSONL：
+
+```json
+{ "type": "custom", "customType": "pi-web:tool-selection", "data": { "version": 1, "tools": [] } }
+```
+
+- 最新的有效条目为准；无条目 = 旧会话，保持 Pi 默认行为；空 `tools` = Chat only；非空 = 恢复所选内置工具。
+- Chat only 不加载 extensions/skills/prompt 模板/主题/Pi 基础系统提示，系统提示严格取 Pi 默认加载器发现的上下文文件（全局与项目 `AGENTS.md`、`AGENTS.override.md`、`CLAUDE.md`）的有序内容，不追加任何前缀/后缀/cwd 文本。
+- 持久化的选择必须在 `createAgentSessionServices()` 之前解析，确保 Chat only 从不导入或执行会话扩展；系统提示还要在 `before_agent_start` 之后重写（SDK 在模型调用前重建基础提示）。
+- 非空预设间切换可原地更新 wrapper；**跨越 Chat-only 边界必须 append 新选择并重建 wrapper**（普通 wrapper 已加载扩展，Chat-only wrapper 没有这些资源可原地启用）。
+- 子代理的持久化使用自身元数据里的 `resourceSnapshot`，不复制该条目。
+
+详见 `docs/adr/0002-chat-only-tool-selection.md`。
