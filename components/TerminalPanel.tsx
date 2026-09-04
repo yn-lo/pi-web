@@ -1,9 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
-import "@xterm/xterm/css/xterm.css";
 import { useI18n } from "@/hooks/useI18n";
 import { useTheme } from "@/hooks/useTheme";
 import { useTerminal } from "@/hooks/useTerminal";
@@ -65,12 +62,30 @@ interface TerminalPanelProps {
   fillHeight?: boolean;
 }
 
+// Loaded lazily so the xterm library is never evaluated during server-side
+// prerender of the home page (xterm references the browser-only `self` global).
+let loadXterm: (() => Promise<{
+  Terminal: typeof import("@xterm/xterm").Terminal;
+  FitAddon: typeof import("@xterm/addon-fit").FitAddon;
+}>) | null = null;
+async function getXterm() {
+  if (!loadXterm) {
+    const xterm = await import("@xterm/xterm");
+    const fit = await import("@xterm/addon-fit");
+    await import("@xterm/xterm/css/xterm.css");
+    loadXterm = () => Promise.resolve({ Terminal: xterm.Terminal, FitAddon: fit.FitAddon });
+  }
+  return loadXterm();
+}
+
 export function TerminalPanel({ cwd, onClose, fillHeight = false }: TerminalPanelProps) {
   const { t } = useI18n();
   const { isDark } = useTheme();
   const containerRef = useRef<HTMLDivElement>(null);
-  const termRef = useRef<Terminal | null>(null);
-  const fitAddonRef = useRef<FitAddon | null>(null);
+  // Note: `typeof import(...)` below is a compile-time-only type query; it does
+  // not trigger a runtime import, so it cannot load xterm during prerender.
+  const termRef = useRef<InstanceType<typeof import("@xterm/xterm").Terminal> | null>(null);
+  const fitAddonRef = useRef<InstanceType<typeof import("@xterm/addon-fit").FitAddon> | null>(null);
   const { session, status, error, open, write, resize, close } = useTerminal();
   const cwdRef = useRef(cwd);
   const [height, setHeight] = useState(240);
@@ -80,66 +95,78 @@ export function TerminalPanel({ cwd, onClose, fillHeight = false }: TerminalPane
     const el = containerRef.current;
     if (!el) return;
 
-    const term = new Terminal({
-      cursorBlink: true,
-      fontSize: 13,
-      lineHeight: 1.25,
-      fontFamily:
-        'var(--font-mono), "Cascadia Mono", Menlo, Consolas, "Courier New", monospace',
-      theme: { ...(isDark ? DARK_THEME : LIGHT_THEME) },
-      scrollback: 3000,
-    });
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.open(el);
-    termRef.current = term;
-    fitAddonRef.current = fit;
-
     let disposed = false;
-    const dataSubscription = term.onData((data) => {
-      void write(data);
-    });
+    let disposeAfterLoad: (() => void) | undefined;
+    let cancelled = false;
 
-    const fitNow = () => {
-      if (disposed) return;
-      try {
-        fit.fit();
-      } catch {
-        return;
-      }
-      const dims = fit.proposeDimensions();
-      if (dims) void resize(dims.cols, dims.rows);
-    };
+    void getXterm().then(({ Terminal, FitAddon }) => {
+      if (cancelled) return;
 
-    const initialDims = fit.proposeDimensions();
-    void open(cwdRef.current, initialDims?.cols, initialDims?.rows, {
-      onData: (chunk) => {
-        if (!disposed) term.write(chunk);
-      },
-      onExit: (exitCode) => {
+      const term = new Terminal({
+        cursorBlink: true,
+        fontSize: 13,
+        lineHeight: 1.25,
+        fontFamily:
+          'var(--font-mono), "Cascadia Mono", Menlo, Consolas, "Courier New", monospace',
+        theme: { ...(isDark ? DARK_THEME : LIGHT_THEME) },
+        scrollback: 3000,
+      });
+      const fit = new FitAddon();
+      term.loadAddon(fit);
+      term.open(el);
+      termRef.current = term;
+      fitAddonRef.current = fit;
+
+      const dataSubscription = term.onData((data) => {
+        void write(data);
+      });
+
+      const fitNow = () => {
         if (disposed) return;
-        term.write(`\r\n\x1b[90m${t("terminal.exited", { code: exitCode })}\x1b[0m\r\n`);
-      },
-    });
+        try {
+          fit.fit();
+        } catch {
+          return;
+        }
+        const dims = fit.proposeDimensions();
+        if (dims) void resize(dims.cols, dims.rows);
+      };
 
-    const observer = new ResizeObserver(fitNow);
-    observer.observe(el);
-    window.addEventListener("resize", fitNow);
+      const initialDims = fit.proposeDimensions();
+      void open(cwdRef.current, initialDims?.cols, initialDims?.rows, {
+        onData: (chunk) => {
+          if (!disposed) term.write(chunk);
+        },
+        onExit: (exitCode) => {
+          if (disposed) return;
+          term.write(`\r\n\x1b[90m${t("terminal.exited", { code: exitCode })}\x1b[0m\r\n`);
+        },
+      });
+
+      const observer = new ResizeObserver(fitNow);
+      observer.observe(el);
+      window.addEventListener("resize", fitNow);
+
+      disposeAfterLoad = () => {
+        disposed = true;
+        observer.disconnect();
+        window.removeEventListener("resize", fitNow);
+        dataSubscription.dispose();
+        if (fitAddonRef.current) {
+          // Disposing the addon detaches it from the terminal; the terminal
+          // disposal below is enough.
+          try { fitAddonRef.current.dispose(); } catch { /* already gone */ }
+          fitAddonRef.current = null;
+        }
+        term.dispose();
+        termRef.current = null;
+        void close();
+      };
+    });
 
     return () => {
-      disposed = true;
-      observer.disconnect();
-      window.removeEventListener("resize", fitNow);
-      dataSubscription.dispose();
-      if (fitAddonRef.current) {
-        // Disposing the addon detaches it from the terminal; the terminal
-        // disposal below is enough.
-        try { fitAddonRef.current.dispose(); } catch { /* already gone */ }
-        fitAddonRef.current = null;
-      }
-      term.dispose();
-      termRef.current = null;
-      void close();
+      cancelled = true;
+      disposeAfterLoad?.();
     };
     // Mount-time only: the shell keeps running in its original cwd even if the
     // active project changes, and reopening the panel starts a fresh session.

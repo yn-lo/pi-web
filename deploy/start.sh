@@ -2,7 +2,7 @@
 #
 # Pi Web 远程控制服务器 — 启动脚本
 # 用法（在已 git pull 的仓库根目录）:
-#   sudo bash deploy/pi-web-start.sh [你的域名]
+#   sudo bash deploy/start.sh [你的域名]
 #
 # 假定代码已通过 git pull 拉到最新；本脚本只负责: 依赖、构建、配置 systemd 并启动。
 # 若需要一键拉代码，可先手动在仓库根执行: git pull --ff-only origin main
@@ -51,6 +51,7 @@ if [ -f "$APP_DIR/.env" ]; then
 fi
 PW="${PI_WEB_PASSWORD:-}"
 DOMAIN="${PI_WEB_ALLOWED_HOSTS:-$DOMAIN}"
+AUTH_USER="${PI_WEB_USERNAME:-pi}"
 if [ ! -f "$ENV_FILE" ] || [ -z "$PW" ]; then
   if [ -z "$PW" ]; then
     if [ -n "${PI_WEB_PASSWORD:-}" ]; then
@@ -58,14 +59,14 @@ if [ ! -f "$ENV_FILE" ] || [ -z "$PW" ]; then
       echo "  使用环境变量 PI_WEB_PASSWORD（你手动设置的密码）。"
     else
       PW="$(openssl rand -base64 24 | tr -d '\n')"
-      echo "  未设置密码，自动生成（登录用户名固定为 pi）请记下仅此一次的密码："
+      echo "  未设置密码，自动生成，登录用户名: $AUTH_USER，请记下仅此一次的密码："
       echo "  >>>  $PW  <<<"
     fi
   else
     echo "  使用你手动设置的密码。"
   fi
   : > "$ENV_FILE"
-  printf 'PI_WEB_PASSWORD=%s\nPI_WEB_ALLOWED_HOSTS=%s\n' "$PW" "$DOMAIN" >> "$ENV_FILE"
+  printf 'PI_WEB_PASSWORD=%s\nPI_WEB_ALLOWED_HOSTS=%s\nPI_WEB_USERNAME=%s\n' "$PW" "$DOMAIN" "$AUTH_USER" >> "$ENV_FILE"
 else
   echo "  已存在 $ENV_FILE，保留现有配置。"
 fi
@@ -108,9 +109,9 @@ systemctl --no-pager --lines=15 status pi-web || true
 
 echo
 echo "完成。请按下面配置 HTTPS 反向代理后访问："
-echo "  浏览器打开  https://$DOMAIN ，用户名: pi  +  上面记录的密码"
+echo "  浏览器打开  https://$DOMAIN ，用户名: $AUTH_USER  +  上面记录的密码"
 echo "  反向代理 Nginx 参考（SSE 需关闭缓冲）:"
-echo "      proxy_pass http://127.0.0.1:30141;"
+echo "      proxy_pass http://127.0.0.1:${PORT:-30141};"
 echo "      proxy_buffering off;"
 echo
 echo "  常用操作:"

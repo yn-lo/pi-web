@@ -1,6 +1,8 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 
-export const PI_WEB_AUTH_USERNAME = "pi";
+/** 默认 Basic Auth 用户名；可通过环境变量 PI_WEB_USERNAME 覆盖。 */
+export const PI_WEB_AUTH_USERNAME =
+  process.env.PI_WEB_USERNAME?.trim() || "pi";
 
 function hashSecret(value: string): Buffer {
   return createHash("sha256").update(value, "utf8").digest();
