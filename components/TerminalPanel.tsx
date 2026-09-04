@@ -96,9 +96,27 @@ export function TerminalPanel({ cwd, onClose, fillHeight = false }: TerminalPane
     if (!el) return;
 
     let disposed = false;
-    let disposeAfterLoad: (() => void) | undefined;
-    let cancelled = false;
 
+    // fitCurrent is set once xterm loads; the resize listener / ResizeObserver
+    // below call it on every resize and are registered synchronously so they are
+    // always cleaned up on unmount, even if the async xterm load has not resolved yet.
+    const fitCurrent = () => {
+      const fit = fitAddonRef.current;
+      if (!fit || disposed) return;
+      try {
+        fit.fit();
+      } catch {
+        return;
+      }
+      const dims = fit.proposeDimensions();
+      if (dims) void resize(dims.cols, dims.rows);
+    };
+
+    const observer = new ResizeObserver(fitCurrent);
+    observer.observe(el);
+    window.addEventListener("resize", fitCurrent);
+
+    let cancelled = false;
     void getXterm().then(({ Terminal, FitAddon }) => {
       if (cancelled) return;
 
@@ -117,20 +135,9 @@ export function TerminalPanel({ cwd, onClose, fillHeight = false }: TerminalPane
       termRef.current = term;
       fitAddonRef.current = fit;
 
-      const dataSubscription = term.onData((data) => {
+      term.onData((data) => {
         void write(data);
       });
-
-      const fitNow = () => {
-        if (disposed) return;
-        try {
-          fit.fit();
-        } catch {
-          return;
-        }
-        const dims = fit.proposeDimensions();
-        if (dims) void resize(dims.cols, dims.rows);
-      };
 
       const initialDims = fit.proposeDimensions();
       void open(cwdRef.current, initialDims?.cols, initialDims?.rows, {
@@ -143,30 +150,27 @@ export function TerminalPanel({ cwd, onClose, fillHeight = false }: TerminalPane
         },
       });
 
-      const observer = new ResizeObserver(fitNow);
-      observer.observe(el);
-      window.addEventListener("resize", fitNow);
-
-      disposeAfterLoad = () => {
-        disposed = true;
-        observer.disconnect();
-        window.removeEventListener("resize", fitNow);
-        dataSubscription.dispose();
-        if (fitAddonRef.current) {
-          // Disposing the addon detaches it from the terminal; the terminal
-          // disposal below is enough.
-          try { fitAddonRef.current.dispose(); } catch { /* already gone */ }
-          fitAddonRef.current = null;
-        }
-        term.dispose();
-        termRef.current = null;
-        void close();
-      };
+      // Keep the resize path bound to this fit instance so the synchronously
+      // registered listener/observer above pick it up correctly.
+      fitCurrent();
     });
 
     return () => {
       cancelled = true;
-      disposeAfterLoad?.();
+      disposed = true;
+      observer.disconnect();
+      window.removeEventListener("resize", fitCurrent);
+      // Tear down anything that xterm load created (if it resolved before unmount).
+      const term = termRef.current;
+      termRef.current = null;
+      if (term) {
+        try { term.dispose(); } catch { /* already gone */ }
+      }
+      if (fitAddonRef.current) {
+        try { fitAddonRef.current.dispose(); } catch { /* already gone */ }
+        fitAddonRef.current = null;
+      }
+      void close();
     };
     // Mount-time only: the shell keeps running in its original cwd even if the
     // active project changes, and reopening the panel starts a fresh session.
