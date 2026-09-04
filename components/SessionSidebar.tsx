@@ -1706,7 +1706,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
               </svg>
               {t("files.explorer")}
             </button>
-            {explorerOpen && changesCount > 0 && (
+            {explorerOpen && (
               <ToolbarIconButton
                 onClick={() => setChangesCollapsed((v) => !v)}
                 title={t("sidebar.changedFiles", { count: changesCount })}

@@ -1120,14 +1120,15 @@ export function AppShell() {
         aria-label={translate("terminal.toggle")}
         aria-pressed={terminalOpen}
         style={{
-          display: "flex", alignItems: "center", justifyContent: "center",
-          width: TOP_BAR_ICON_BUTTON_SIZE, height: TOP_BAR_ICON_BUTTON_SIZE, padding: 0,
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+          height: "100%", padding: "0 12px",
           background: terminalOpen ? "var(--bg-selected)" : "none",
           border: "none", borderRight: "1px solid var(--border)",
           color: terminalOpen ? "var(--text)" : "var(--text-muted)",
           cursor: enabled ? "pointer" : "not-allowed",
           opacity: enabled ? 1 : 0.45,
-          flexShrink: 0, transition: "color 0.12s",
+          flexShrink: 0, fontSize: 11, whiteSpace: "nowrap",
+          transition: "color 0.12s",
         }}
         onMouseEnter={(event) => { if (enabled) event.currentTarget.style.color = "var(--text)"; }}
         onMouseLeave={(event) => {
@@ -1138,6 +1139,7 @@ export function AppShell() {
           <polyline points="4 17 10 11 4 5" />
           <line x1="12" y1="19" x2="20" y2="19" />
         </svg>
+        <span>{translate("terminal.toggle")}</span>
       </button>
     );
   };
@@ -1860,8 +1862,8 @@ export function AppShell() {
               {renderLanguageButton(false)}
               {renderProjectTrustWarning(false)}
               {renderChatToolbarActions(false)}
-              {renderSessionStatsButton(false)}
               {renderTerminalToggle()}
+              {renderSessionStatsButton(false)}
             </>
           )}
           {!isMobile && renderMainFileToggle(false)}

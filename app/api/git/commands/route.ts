@@ -73,20 +73,30 @@ async function resolveAgent(sessionId: string): Promise<Agent | undefined> {
   return undefined;
 }
 
-/** Compute the diff to summarize: staged diff, or stage-all when none staged. */
-async function collectStagedDiff(cwd: string): Promise<{ diffText: string; hasStaged: boolean; haveFiles: boolean }> {
+/**
+ * Compute the diff to summarize: the staged diff when there are staged files,
+ * otherwise a temporary stage-all whose index changes are reverted afterwards
+ * (caller must restore when `usedTemporaryStage` is true).
+ */
+async function collectStagedDiff(cwd: string): Promise<{
+  diffText: string;
+  hasStaged: boolean;
+  haveFiles: boolean;
+  usedTemporaryStage: boolean;
+}> {
   let status = await getGitStatus(cwd);
   const haveFiles = status.files.length > 0;
-  let hasStaged = status.files.some((file) => file.staged);
+  const hasStaged = status.files.some((file) => file.staged);
+  let usedTemporaryStage = false;
   if (haveFiles && !hasStaged) {
     const addResult = await runGitSafe(cwd, ["add", "-A"]);
     if ("error" in addResult) throw new Error(addResult.error);
+    usedTemporaryStage = true;
     status = await getGitStatus(cwd);
-    hasStaged = status.files.some((file) => file.staged);
   }
   const diffResult = await runGitSafe(cwd, ["diff", "--staged", "--no-color"]);
   const diffText = "stdout" in diffResult ? diffResult.stdout : "";
-  return { diffText, hasStaged, haveFiles };
+  return { diffText, hasStaged, haveFiles, usedTemporaryStage };
 }
 
 export async function POST(request: NextRequest) {
@@ -110,25 +120,33 @@ export async function POST(request: NextRequest) {
     if (accessError) return accessError;
 
     if (action === "gen") {
-      const { diffText, hasStaged, haveFiles } = await collectStagedDiff(cwd);
-      if (!haveFiles) {
-        return NextResponse.json({ message: "", hasStaged: false });
-      }
-      let status = await getGitStatus(cwd);
-      const fallback = buildCommitMessageFallback(status.files, status.repositoryRoot ?? cwd);
-      let message = fallback;
-      if (diffText.trim()) {
-        const sourceAgent = await resolveAgent(body.sessionId ?? "");
-        if (sourceAgent) {
-          try {
-            const aiMessage = await generateCommitMessageFromAgent(sourceAgent, diffText, body.lang);
-            if (aiMessage.trim()) message = aiMessage.trim();
-          } catch {
-            // keep the rule-based fallback
+      const { diffText, hasStaged, haveFiles, usedTemporaryStage } = await collectStagedDiff(cwd);
+      try {
+        if (!haveFiles) {
+          return NextResponse.json({ message: "", hasStaged: false });
+        }
+        const status = await getGitStatus(cwd);
+        const fallback = buildCommitMessageFallback(status.files, status.repositoryRoot ?? cwd);
+        let message = fallback;
+        if (diffText.trim()) {
+          const sourceAgent = await resolveAgent(body.sessionId ?? "");
+          if (sourceAgent) {
+            try {
+              const aiMessage = await generateCommitMessageFromAgent(sourceAgent, diffText, body.lang);
+              if (aiMessage.trim()) message = aiMessage.trim();
+            } catch {
+              // keep the rule-based fallback
+            }
           }
         }
+        return NextResponse.json({ message, hasStaged });
+      } finally {
+        // Undo a temporary stage-all so generating a message never changes the
+        // user's actual staging state (avoids accidentally staging everything).
+        if (usedTemporaryStage) {
+          await runGitSafe(cwd, ["reset"]);
+        }
       }
-      return NextResponse.json({ message, hasStaged });
     }
 
     if (action === "stage-all") {

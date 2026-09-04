@@ -506,6 +506,7 @@ export const enLocale: LocalePlugin = {
     "git.stageAll": "Stage all",
     "git.stagedSection": "Staged",
     "git.unstagedSection": "Unstaged",
+    "git.committedHint": "Committed",
     "git.busy": "…",
   },
 };

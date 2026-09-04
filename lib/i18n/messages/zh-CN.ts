@@ -506,6 +506,7 @@ export const zhCNLocale: LocalePlugin = {
     "git.stageAll": "全部暂存",
     "git.stagedSection": "已暂存",
     "git.unstagedSection": "未暂存",
+    "git.committedHint": "已提交，可推送",
     "git.busy": "…",
   },
 };

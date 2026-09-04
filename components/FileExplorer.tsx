@@ -533,7 +533,7 @@ function ChangeRow({
         <button
           type="button"
           disabled={disabled}
-          onClick={onToggle}
+          onClick={(event) => { event.stopPropagation(); onToggle(); }}
           title={staged ? t("git.unstage") : t("git.stage")}
           style={{ height: 18, padding: "0 6px", border: "1px solid var(--border)", borderRadius: 4, background: "var(--bg-panel)", color: "var(--text-muted)", cursor: !disabled ? "pointer" : "default", fontSize: 10, flexShrink: 0 }}
         >
@@ -564,9 +564,10 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   const [highlightedPaths, setHighlightedPaths] = useState<Set<string>>(new Set());
   const [gitFiles, setGitFiles] = useState<GitFileStatus[]>([]);
   const [gitLineStats, setGitLineStats] = useState({ additions: 0, deletions: 0 });
+  const [isGitRepository, setIsGitRepository] = useState(false);
   const [commitMessage, setCommitMessage] = useState("");
+  const [justCommitted, setJustCommitted] = useState(false);
   const [gitBusy, setGitBusy] = useState(false);
-  const [gitAction, setGitAction] = useState<string | null>(null);
   const [gitError, setGitError] = useState<string | null>(null);
   const [gitResult, setGitResult] = useState<string | null>(null);
   const [uploadPhase, setUploadPhase] = useState<UploadPhase>("idle");
@@ -734,6 +735,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     fetchGitStatus(cwd)
       .then((status) => {
         if (!cancelled) {
+          setIsGitRepository(status.isGitRepository);
           setGitFiles(status.isGitRepository ? status.files : []);
           setGitLineStats(status.isGitRepository
             ? { additions: status.additions, deletions: status.deletions }
@@ -742,6 +744,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
       })
       .catch(() => {
         if (!cancelled) {
+          setIsGitRepository(false);
           setGitFiles([]);
           setGitLineStats({ additions: 0, deletions: 0 });
         }
@@ -758,7 +761,6 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   const generateCommitMessage = useCallback(async () => {
     if (gitBusy) return;
     setGitBusy(true);
-    setGitAction("gen");
     setGitError(null);
     setGitResult(null);
     try {
@@ -776,7 +778,6 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
       setGitError(e instanceof Error ? e.message : String(e));
     } finally {
       setGitBusy(false);
-      setGitAction(null);
     }
   }, [cwd, gitBusy, locale, refreshGit, sessionId]);
 
@@ -790,7 +791,6 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     if (action === "commit") body.message = commitMessage.trim();
     if (action === "stage" || action === "unstage") body.filePath = filePath;
     setGitBusy(true);
-    setGitAction(action);
     setGitError(null);
     setGitResult(null);
     try {
@@ -801,13 +801,14 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
       });
       const data = await res.json() as { ok?: boolean; output?: string; error?: string };
       if (!res.ok) throw new Error(data.error ?? `Failed (HTTP ${res.status})`);
+      if (action === "commit") setJustCommitted(true);
+      if (action === "push") setJustCommitted(false);
       setGitResult(data.output ?? "");
       refreshGit();
     } catch (error) {
       setGitError(error instanceof Error ? error.message : String(error));
     } finally {
       setGitBusy(false);
-      setGitAction(null);
     }
   }, [commitMessage, cwd, gitBusy, refreshGit]);
 
@@ -941,8 +942,9 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
         </div>
       )}
 
-      {!changesCollapsed && gitFiles.length > 0 && (
+      {!changesCollapsed && isGitRepository && (
         <div style={{ padding: "0 4px 2px" }}>
+          {gitFiles.length > 0 && (<>
           <div
             aria-label={t("files.changeStats", {
               count: gitFiles.length,
@@ -999,23 +1001,11 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
               disabled={gitBusy}
             />
           ))}
+          </>)}{/* gitFiles.length > 0 */}
           <div style={{ position: "sticky", bottom: 0, zIndex: 2, marginTop: 4, padding: "6px 10px", borderTop: "1px solid var(--border)", background: "var(--bg-panel)", display: "flex", flexDirection: "column", gap: 6 }}>
-            <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-              {["pull", "push"].map((a) => (
-                <button
-                  key={a}
-                  type="button"
-                  disabled={gitBusy}
-                  onClick={() => runGitAction(a as "pull" | "push")}
-                  style={{ ...gitToolButtonStyle }}
-                >
-                  {t(`git.${a}`)}
-                </button>
-              ))}
-            </div>
             <textarea
               value={commitMessage}
-              onChange={(e) => setCommitMessage(e.target.value)}
+              onChange={(e) => { setCommitMessage(e.target.value); if (justCommitted) setJustCommitted(false); }}
               placeholder={t("git.commitPlaceholder")}
               rows={2}
               disabled={gitBusy}
@@ -1024,23 +1014,45 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
             <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
               <button
                 type="button"
-                disabled={gitBusy}
+                disabled={gitBusy || justCommitted}
                 onClick={generateCommitMessage}
-                style={{ ...gitToolButtonStyle, color: "var(--accent)" }}
+                title={t("git.generateCommit")}
+                aria-label={t("git.generateCommit")}
+                style={{ ...gitToolButtonStyle, width: 24, padding: 0 }}
               >
-                {gitBusy && gitAction === "gen" ? t("git.generating") : t("git.generateCommit")}
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z" />
+                  <path d="M20 2v4" />
+                  <path d="M22 4h-4" />
+                  <circle cx="4" cy="20" r="2" />
+                </svg>
               </button>
               <button
                 type="button"
-                disabled={gitBusy || !commitMessage.trim()}
-                onClick={() => runGitAction("commit")}
-                style={{ ...gitToolButtonStyle, marginLeft: "auto" }}
+                disabled={gitBusy}
+                onClick={() => runGitAction("pull")}
+                style={{ ...gitToolButtonStyle }}
               >
-                {gitBusy && gitAction === "commit" ? t("git.busy") : t("git.commit")}
+                {t("git.pull")}
+              </button>
+              <div style={{ flex: 1 }} />
+              <button
+                type="button"
+                disabled={gitBusy || (!justCommitted && !commitMessage.trim())}
+                onClick={() => (justCommitted ? runGitAction("push") : runGitAction("commit"))}
+                style={{ ...gitToolButtonStyle, flexShrink: 0 }}
+              >
+                {gitBusy ? t("git.busy") : justCommitted ? t("git.push") : t("git.commit")}
               </button>
             </div>
+            <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+              {(justCommitted || gitResult) && (
+                <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 10, color: "var(--text-dim)" }}>
+                  {justCommitted ? t("git.committedHint") : ""}{gitResult ? ` ${gitResult}` : ""}
+                </span>
+              )}
+            </div>
             {gitError && <div style={{ fontSize: 10, color: "#f87171", overflowWrap: "anywhere" }}>{gitError}</div>}
-            {gitResult && <div style={{ fontSize: 10, color: "var(--text-dim)", overflowWrap: "anywhere", whiteSpace: "pre-wrap" }}>{gitResult}</div>}
           </div>
         </div>
       )}

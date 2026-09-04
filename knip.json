@@ -1,0 +1,15 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "include": ["files", "dependencies", "unlisted", "binaries"],
+  "entry": ["bin/*.js", "app/**/*.{ts,tsx}", "**/*.test.mjs"],
+  "project": [
+    "app/**/*.{ts,tsx}",
+    "components/**/*.{ts,tsx}",
+    "hooks/**/*.{ts,tsx}",
+    "lib/**/*.{ts,tsx}",
+    "bin/**/*.{js,ts}",
+    "public/**/*.{ts,js}",
+    "**/*.test.mjs",
+    "**/*.css"
+  ]
+}

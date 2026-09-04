@@ -1,0 +1,18 @@
+{
+  "threshold": 8,
+  "minLines": 6,
+  "minTokens": 60,
+  "ignore": [
+    "**/.next/**",
+    "**/node_modules/**",
+    "**/public/**",
+    "**/*.test.mjs",
+    "**/docs/**",
+    "**/*.md",
+    "**/*.svg",
+    "**/*.css",
+    "**/package-lock.json",
+    "**/bun.lock"
+  ],
+  "reporters": ["console"]
+}
