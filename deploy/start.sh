@@ -48,34 +48,40 @@ fi
 echo "==> 3/6 构建生产版本"
 npm run build
 
-echo "==> 4/6 准备环境文件（权限 600；已存在则保留原密码）"
+echo "==> 4/6 准备环境文件（权限 600）"
 mkdir -p /etc/pi-web
-# 优先使用仓库根 .env（手动编辑）里的值；否则用环境变量；都没有才自动生成
+# 若仓库根存在 .env，则以它为唯一权威源，每次都整体同步到 /etc/pi-web/pi-web.env，
+# 这样无论改了哪个变量都能生效。没有 .env 时才保留旧 env 或首次自动生成。
 if [ -f "$APP_DIR/.env" ]; then
   # shellcheck disable=SC1090
   set -a; . "$APP_DIR/.env"; set +a
-  echo "  已从 $APP_DIR/.env 读取配置。"
+  echo "  已从 $APP_DIR/.env 读取配置，将整体同步到 $ENV_FILE。"
 fi
 PW="${PI_WEB_PASSWORD:-}"
 DOMAIN="${PI_WEB_ALLOWED_HOSTS:-$DOMAIN}"
 AUTH_USER="${PI_WEB_USERNAME:-pi}"
-if [ ! -f "$ENV_FILE" ] || [ -z "$PW" ]; then
-  if [ -z "$PW" ]; then
-    if [ -n "${PI_WEB_PASSWORD:-}" ]; then
-      PW="$PI_WEB_PASSWORD"
-      echo "  使用环境变量 PI_WEB_PASSWORD（你手动设置的密码）。"
-    else
-      PW="$(openssl rand -base64 24 | tr -d '\n')"
-      echo "  未设置密码，自动生成，登录用户名: $AUTH_USER，请记下仅此一次的密码："
-      echo "  >>>  $PW  <<<"
-    fi
-  else
-    echo "  使用你手动设置的密码。"
-  fi
+PORT="${PORT:-30141}"
+
+if [ -f "$APP_DIR/.env" ]; then
+  # .env 存在 -> 整体重写，任何变量改动都生效。
   : > "$ENV_FILE"
-  printf 'PI_WEB_PASSWORD=%s\nPI_WEB_ALLOWED_HOSTS=%s\nPI_WEB_USERNAME=%s\n' "$PW" "$DOMAIN" "$AUTH_USER" >> "$ENV_FILE"
+  printf 'PI_WEB_PASSWORD=%s\nPI_WEB_ALLOWED_HOSTS=%s\nPI_WEB_USERNAME=%s\nPORT=%s\n' \
+    "$PW" "$DOMAIN" "$AUTH_USER" "$PORT" >> "$ENV_FILE"
+  if [ -n "$PW" ]; then
+    echo "  已用 .env 更新配置（密码按你在 .env 中的设置）。"
+  else
+    echo "  注意：.env 未设置 PI_WEB_PASSWORD，已生成空密码占位（将无法登录）。"
+  fi
+elif [ -f "$ENV_FILE" ]; then
+  echo "  未提供 .env 且 $ENV_FILE 已存在，保留现有配置。"
 else
-  echo "  已存在 $ENV_FILE，保留现有配置。"
+  # 首次部署且无 .env -> 自动生成。
+  PW="$(openssl rand -base64 24 | tr -d '\n')"
+  : > "$ENV_FILE"
+  printf 'PI_WEB_PASSWORD=%s\nPI_WEB_ALLOWED_HOSTS=%s\nPI_WEB_USERNAME=%s\nPORT=%s\n' \
+    "$PW" "$DOMAIN" "$AUTH_USER" "$PORT" >> "$ENV_FILE"
+  echo "  未设置 .env，自动生成，登录用户名: $AUTH_USER，请记下仅此一次的密码："
+  echo "  >>>  $PW  <<<"
 fi
 chown root:root "$ENV_FILE"
 chmod 600 "$ENV_FILE"
