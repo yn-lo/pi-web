@@ -30,9 +30,6 @@ export function ProjectTrustDialog({
         padding: 16,
         background: "rgba(0,0,0,0.4)",
       }}
-      onClick={(event) => {
-        if (!busy && event.target === event.currentTarget) onCancel();
-      }}
     >
       <div
         role="dialog"

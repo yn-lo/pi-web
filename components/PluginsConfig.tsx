@@ -763,9 +763,6 @@ export function PluginsConfig({
         alignItems: "center",
         justifyContent: "center",
       }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
     >
       <div
         style={{
