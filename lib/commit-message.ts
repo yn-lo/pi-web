@@ -1,6 +1,4 @@
-import path from "path";
 import { Agent } from "@earendil-works/pi-agent-core";
-import type { GitFileStatus } from "./git-types";
 import { buildSessionTitleAgentOptions } from "./session-title";
 
 const COMMIT_TIMEOUT_MS = 90_000;
@@ -20,41 +18,6 @@ Rules:
 function languageName(lang?: string): string {
   if (lang === "zh-CN") return "简体中文";
   return "English";
-}
-
-function toGitPath(filePath: string): string {
-  return filePath.split(path.sep).join("/");
-}
-
-function toRelativePath(repoRoot: string, filePath: string): string {
-  const rel = path.relative(repoRoot, filePath);
-  if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return path.basename(filePath);
-  return toGitPath(rel);
-}
-
-function pickType(counts: Record<GitFileStatus["status"], number>): string {
-  if (counts.conflict > 0) return "fix";
-  if (counts.deleted > 0 && counts.added === 0 && counts.untracked === 0) return "remove";
-  if (counts.added + counts.untracked > 0 && counts.modified + counts.deleted === 0) return "feat";
-  if (counts.renamed > 0 && counts.added + counts.untracked + counts.modified + counts.deleted === 0) return "refactor";
-  return "chore";
-}
-
-/** Offline, rule-based commit message: a conventional subject plus the file list. */
-export function buildCommitMessageFallback(files: GitFileStatus[], repoRoot: string): string {
-  if (files.length === 0) return "";
-  const counts: Record<GitFileStatus["status"], number> = {
-    modified: 0, added: 0, deleted: 0, renamed: 0, untracked: 0, conflict: 0,
-  };
-  for (const file of files) counts[file.status]++;
-  const type = pickType(counts);
-  const firstName = toRelativePath(repoRoot, files[0].filePath);
-  const subject = files.length > 1 ? `${type}: ${firstName} +${files.length - 1} more` : `${type}: ${firstName}`;
-  const body = files.map((file) => {
-    const marker = file.status === "added" || file.status === "untracked" ? "+" : file.status === "deleted" ? "-" : " ";
-    return `${marker} ${toRelativePath(repoRoot, file.filePath)}`;
-  });
-  return `${subject}\n\n${body.join("\n")}`;
 }
 
 /** Build the user-message content handed to the model. */

@@ -110,7 +110,7 @@ ExecStart=/usr/bin/env npm start
 Restart=on-failure
 RestartSec=5
 
-NoNewPrivileges=true
+NoNewPrivileges=false
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=false
@@ -119,6 +119,20 @@ ReadWritePaths=/
 [Install]
 WantedBy=multi-user.target
 EOF
+
+# 全权模式：给运行账户配无密码全量 sudo（默认开启）。
+# 这是高权限操作 —— 拥有该网页密码即拥有服务器 root。若想收紧，设 PI_WEB_ENABLE_SUDO=0。
+if [ "${PI_WEB_ENABLE_SUDO:-1}" = "1" ]; then
+  if [ -d /etc/sudoers.d ]; then
+    printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$RUN_USER" > /etc/sudoers.d/pi-web
+    chmod 440 /etc/sudoers.d/pi-web
+    echo "  已给 $RUN_USER 配置无密码全量 sudo。"
+  else
+    echo "  警告: 未找到 /etc/sudoers.d，跳过 sudo 配置。" >&2
+  fi
+else
+  echo "  PI_WEB_ENABLE_SUDO=0，跳过 sudo 配置（默认无提权）。"
+fi
 
 chown -R "$RUN_USER":"$RUN_USER" "$APP_DIR"
 

@@ -1038,6 +1038,7 @@ export function AppShell() {
         onOpenFile={handleOpenFile}
         explorerRefreshKey={explorerRefreshKey}
         onExplorerRefresh={handleExplorerRefresh}
+        onCloseSidebar={isMobile ? () => setSidebarOpen(false) : undefined}
         onAtMention={handleAtMention}
         onAtMentions={handleAtMentions}
         onBackgroundTaskDone={handleBackgroundTaskDone}
@@ -1861,8 +1862,9 @@ export function AppShell() {
       overflow: "hidden",
       background: "var(--bg)",
     }}>
-      {/* Mobile overlay backdrop */}
+      {/* Mobile overlay backdrop (visual only — close via the button inside the sidebar) */}
       <div
+        aria-hidden="true"
         className={`sidebar-overlay-backdrop${mobileSidebarReady ? "" : " sidebar-mobile-pending"}`}
         style={{
           position: "fixed",

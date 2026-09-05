@@ -8,7 +8,7 @@ import {
   isFilePathAllowed,
   isWindowsAbsolutePath,
 } from "@/lib/file-access";
-import { buildCommitMessageFallback, generateCommitMessageFromAgent } from "@/lib/commit-message";
+import { generateCommitMessageFromAgent } from "@/lib/commit-message";
 import { getGitStatus } from "@/lib/git-changes";
 import { git } from "@/lib/worktree";
 import { getRpcSession, startRpcSession } from "@/lib/rpc-manager";
@@ -125,21 +125,23 @@ export async function POST(request: NextRequest) {
         if (!haveFiles) {
           return NextResponse.json({ message: "", hasStaged: false });
         }
-        const status = await getGitStatus(cwd);
-        const fallback = buildCommitMessageFallback(status.files, status.repositoryRoot ?? cwd);
-        let message = fallback;
+        let message = "";
+        let aiUnavailable = false;
         if (diffText.trim()) {
           const sourceAgent = await resolveAgent(body.sessionId ?? "");
           if (sourceAgent) {
             try {
               const aiMessage = await generateCommitMessageFromAgent(sourceAgent, diffText, body.lang);
               if (aiMessage.trim()) message = aiMessage.trim();
+              else aiUnavailable = true;
             } catch {
-              // keep the rule-based fallback
+              aiUnavailable = true;
             }
+          } else {
+            aiUnavailable = true;
           }
         }
-        return NextResponse.json({ message, hasStaged });
+        return NextResponse.json({ message, hasStaged, aiUnavailable });
       } finally {
         // Undo a temporary stage-all so generating a message never changes the
         // user's actual staging state (avoids accidentally staging everything).

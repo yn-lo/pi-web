@@ -853,9 +853,14 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ cwd, action: "gen", sessionId, lang: locale }),
       });
-      const data = await res.json() as { message?: string; hasStaged?: boolean; error?: string };
+      const data = await res.json() as { message?: string; hasStaged?: boolean; error?: string; aiUnavailable?: boolean };
       if (!res.ok) throw new Error(data.error ?? `Failed (HTTP ${res.status})`);
-      setCommitMessage(data.message ?? "");
+      if (data.aiUnavailable) {
+        setCommitMessage("");
+        window.alert(t("git.aiUnavailable"));
+      } else {
+        setCommitMessage(data.message ?? "");
+      }
       // 无任何已暂存文件时后端会自动 add -A，刷新以同步分区
       if (data.hasStaged) refreshGit();
     } catch (e) {
@@ -863,7 +868,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     } finally {
       setGitBusy(false);
     }
-  }, [cwd, gitBusy, locale, refreshGit, sessionId]);
+  }, [cwd, gitBusy, locale, refreshGit, sessionId, t]);
 
   const runGitAction = useCallback(async (
     action: "pull" | "push" | "commit" | "stage" | "unstage" | "stageAll",
@@ -1189,7 +1194,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
               </button>
               <button
                 type="button"
-                disabled={gitBusy || (!justCommitted && !commitMessage.trim())}
+                disabled={gitBusy || (!justCommitted && (!commitMessage.trim() || !gitFiles.some((file) => file.staged)))}
                 onClick={() => (justCommitted ? runGitAction("push") : runGitAction("commit"))}
                 style={{ ...gitToolButtonStyle, flexShrink: 0 }}
               >
