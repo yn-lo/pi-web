@@ -1,171 +1,202 @@
-import * as pty from "node-pty";
-import { resolveTerminalShell } from "./terminal-shell";
+import { randomUUID } from "crypto";
+import { homedir } from "os";
+import type { IPty } from "node-pty";
+import { samePath } from "./paths";
+
+export type TerminalEvent =
+  | { type: "output"; data: string; offset: number; reset?: boolean }
+  | { type: "exit"; exitCode: number }
+  | { type: "closed" };
+
+type TerminalListener = (event: TerminalEvent) => void;
+
+interface TerminalRecord {
+  pty: IPty;
+  cwd: string;
+  listeners: Set<TerminalListener>;
+  backlog: string;
+  offset: number;
+  exited: boolean;
+  exitCode: number | null;
+  cleanupTimer: ReturnType<typeof setTimeout> | null;
+}
 
 declare global {
-  // Kept on globalThis (not a module Map) so terminal processes survive
-  // Next.js hot-reload, mirroring the rpc-manager session registry.
-  var __piTerminals: Map<string, TerminalSession> | undefined;
-  var __piTerminalShutdownHooked: boolean | undefined;
+  var __piWebTerminals: Map<string, TerminalRecord> | undefined;
 }
 
-export const DEFAULT_TERMINAL_COLUMNS = 100;
-export const DEFAULT_TERMINAL_ROWS = 30;
+// ponytail: bounded replay; use terminal serialization if full-screen snapshots become necessary.
+const MAX_BACKLOG = 128 * 1024;
+export const TERMINAL_RECONNECT_MS = 120_000;
 
-const registry = (): Map<string, TerminalSession> => {
-  if (!globalThis.__piTerminals) {
-    globalThis.__piTerminals = new Map();
-    installProcessShutdownHook();
-  }
-  return globalThis.__piTerminals;
-};
-
-let sequence = 0;
-
-function installProcessShutdownHook(): void {
-  if (globalThis.__piTerminalShutdownHooked) return;
-  globalThis.__piTerminalShutdownHooked = true;
-  // node-pty's kill() is synchronous native code, so this works on `exit`.
-  process.once("exit", () => {
-    for (const session of registry().values()) session.kill();
-  });
-}
-
-export type TerminalDataListener = (data: string) => void;
-export type TerminalExitListener = (exitCode: number) => void;
-
-export interface TerminalPublicInfo {
-  id: string;
-  pid: number;
-  cwd: string;
-  shellLabel: string;
-  createdAt: number;
-  isRunning: boolean;
-}
-
-/**
- * One interactive shell process managed by node-pty (ConPTY on Windows).
- * Subscribers receive raw output chunks and a single exit notification; write
- * and resize calls proxy straight through to the underlying pty.
- */
-export class TerminalSession {
-  readonly id: string;
-  readonly pid: number;
-  readonly cwd: string;
-  readonly shellLabel: string;
-  readonly createdAt: number;
-  private readonly process: pty.IPty;
-  private readonly dataListeners = new Set<TerminalDataListener>();
-  private readonly exitListeners = new Set<TerminalExitListener>();
-  private running = true;
-
-  constructor(
-    id: string,
-    processHandle: pty.IPty,
-    cwd: string,
-    shellLabel: string,
-  ) {
-    this.id = id;
-    this.process = processHandle;
-    this.pid = processHandle.pid;
-    this.cwd = cwd;
-    this.shellLabel = shellLabel;
-    this.createdAt = Date.now();
-
-    processHandle.onData((data) => {
-      for (const listener of this.dataListeners) listener(data);
-    });
-    const onExited = (exitCode: number) => {
-      this.running = false;
-      for (const listener of this.exitListeners) listener(exitCode);
-      this.dataListeners.clear();
-      this.exitListeners.clear();
+function registry(): Map<string, TerminalRecord> {
+  if (!globalThis.__piWebTerminals) {
+    globalThis.__piWebTerminals = new Map();
+    const shutdown = () => {
+      for (const id of globalThis.__piWebTerminals!.keys()) killTerminal(id, true);
     };
-    processHandle.onExit(({ exitCode }) => {
-      onExited(exitCode);
-      registry().delete(this.id);
-    });
+    process.once("exit", shutdown);
+    process.once("SIGINT", shutdown);
+    process.once("SIGTERM", shutdown);
   }
-
-  get isRunning(): boolean {
-    return this.running;
-  }
-
-  toPublicInfo(): TerminalPublicInfo {
-    return {
-      id: this.id,
-      pid: this.pid,
-      cwd: this.cwd,
-      shellLabel: this.shellLabel,
-      createdAt: this.createdAt,
-      isRunning: this.running,
-    };
-  }
-
-  subscribeData(listener: TerminalDataListener): () => void {
-    this.dataListeners.add(listener);
-    return () => this.dataListeners.delete(listener);
-  }
-
-  subscribeExit(listener: TerminalExitListener): () => void {
-    this.exitListeners.add(listener);
-    return () => this.exitListeners.delete(listener);
-  }
-
-  write(data: string): void {
-    if (this.running) this.process.write(data);
-  }
-
-  resize(cols: number, rows: number): void {
-    if (this.running) this.process.resize(cols, rows);
-  }
-
-  kill(): void {
-    if (!this.running) return;
-    this.running = false;
-    try {
-      this.process.kill();
-    } catch {
-      // The pty may already be gone; the onExit handler finalizes cleanup.
-    }
-  }
+  return globalThis.__piWebTerminals;
 }
 
-export function createTerminalSession(
-  cwd: string,
-  columns = DEFAULT_TERMINAL_COLUMNS,
-  rows = DEFAULT_TERMINAL_ROWS,
-): TerminalSession {
-  const shell = resolveTerminalShell();
-  const id = `t${Date.now().toString(36)}${(sequence++).toString(36)}`;
-  const processHandle = pty.spawn(shell.file, shell.args, {
+function shellEnvironment(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined) env[key] = value;
+  }
+  env.TERM = "xterm-256color";
+  env.COLORTERM = "truecolor";
+  // Windows shells (Git Bash / MSYS2, cmd, PowerShell) otherwise inherit the
+  // system ANSI codepage (e.g. GBK on zh-CN) and mangle non-ASCII filenames.
+  if (!process.env.LANG && !process.env.LC_ALL && !process.env.LC_CTYPE) env.LANG = "C.UTF-8";
+  return env;
+}
+
+function emit(record: TerminalRecord, event: TerminalEvent): void {
+  for (const listener of record.listeners) listener(event);
+}
+
+function scheduleCleanup(id: string, record: TerminalRecord): void {
+  if (record.cleanupTimer || record.listeners.size || registry().get(id) !== record) return;
+  record.cleanupTimer = setTimeout(() => killTerminal(id), TERMINAL_RECONNECT_MS);
+  record.cleanupTimer.unref?.();
+}
+
+function dimension(value: number, fallback: number): number {
+  return Math.min(1000, Math.max(2, Number.isFinite(value) ? Math.floor(value) : fallback));
+}
+
+export function createTerminal(cwd: string, cols: number, rows: number, id: string = randomUUID()): string {
+  const existing = registry().get(id);
+  if (existing) {
+    if (!samePath(existing.cwd, cwd)) throw new Error("Terminal belongs to a different workspace");
+    return id;
+  }
+  let spawn: typeof import("node-pty").spawn;
+  try {
+    // Load inside creation so native module failures reach the API's JSON error handler.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    ({ spawn } = require("node-pty") as typeof import("node-pty"));
+  } catch (error) {
+    throw new Error(
+      `Cannot load the node-pty native terminal module for ${process.platform}-${process.arch}. ` +
+      "The binary may be missing or incompatible. In the pi-web installation directory " +
+      "(the npx cache directory when using npx), run: npm rebuild node-pty --build-from-source --ignore-scripts=false --foreground-scripts. " +
+      "On Debian/Ubuntu, install build tools first: sudo apt-get install -y python3 build-essential. " +
+      `Then restart pi-web. Original error: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
+  }
+  const shell = process.platform === "win32"
+    ? process.env.ComSpec ?? "cmd.exe"
+    : process.env.SHELL || "/bin/sh";
+  const args = process.platform === "win32" ? [] : ["-l"];
+  const pty = spawn(shell, args, {
     name: "xterm-256color",
-    cols: columns,
-    rows,
-    cwd,
-    env: process.env as Record<string, string>,
+    cols: dimension(cols, 80),
+    rows: dimension(rows, 24),
+    cwd: cwd || homedir(),
+    env: shellEnvironment(),
   });
-  const session = new TerminalSession(id, processHandle, cwd, shell.label);
-  registry().set(id, session);
-  return session;
+  const record: TerminalRecord = {
+    pty,
+    cwd,
+    listeners: new Set(),
+    backlog: "",
+    offset: 0,
+    exited: false,
+    exitCode: null,
+    cleanupTimer: null,
+  };
+  registry().set(id, record);
+  // Includes creations whose response or initial SSE connection never arrives.
+  scheduleCleanup(id, record);
+
+  pty.onData((data) => {
+    record.backlog = (record.backlog + data).slice(-MAX_BACKLOG);
+    record.offset += data.length;
+    emit(record, { type: "output", data, offset: record.offset });
+  });
+  pty.onExit(({ exitCode }) => {
+    if (record.cleanupTimer) clearTimeout(record.cleanupTimer);
+    record.cleanupTimer = null;
+    record.exited = true;
+    record.exitCode = exitCode;
+    emit(record, { type: "exit", exitCode });
+    scheduleCleanup(id, record);
+  });
+  return id;
 }
 
-export function getTerminalSession(id: string): TerminalSession | undefined {
-  return registry().get(id);
+export function hasTerminal(id: string): boolean {
+  return registry().has(id);
 }
 
-export function listTerminalSessions(): TerminalSession[] {
-  return [...registry().values()];
+export function getTerminalCwd(id: string): string | undefined {
+  return registry().get(id)?.cwd;
 }
 
-export function closeTerminalSession(id: string): boolean {
-  const session = registry().get(id);
-  if (!session) return false;
-  session.kill();
-  registry().delete(id);
+export function subscribeTerminal(
+  id: string,
+  listener: TerminalListener,
+  after?: number,
+): { output: Extract<TerminalEvent, { type: "output" }>; exited: boolean; exitCode: number | null; unsubscribe: () => void } | null {
+  const record = registry().get(id);
+  if (!record) return null;
+  record.listeners.add(listener);
+  if (record.cleanupTimer) clearTimeout(record.cleanupTimer);
+  record.cleanupTimer = null;
+  const start = record.offset - record.backlog.length;
+  const reset = after === undefined || after < start || after > record.offset;
+  return {
+    output: {
+      type: "output",
+      data: reset ? record.backlog : record.backlog.slice(after - start),
+      offset: record.offset,
+      reset,
+    },
+    exited: record.exited,
+    exitCode: record.exitCode,
+    unsubscribe: () => {
+      record.listeners.delete(listener);
+      scheduleCleanup(id, record);
+    },
+  };
+}
+
+export function writeTerminal(id: string, data: string): boolean {
+  const record = registry().get(id);
+  if (!record || record.exited) return false;
+  record.pty.write(data);
   return true;
 }
 
-export function closeAllTerminalSessions(): void {
-  for (const session of registry().values()) session.kill();
-  registry().clear();
+export function resizeTerminal(id: string, cols: number, rows: number): boolean {
+  const record = registry().get(id);
+  if (!record || record.exited) return false;
+  record.pty.resize(dimension(cols, 80), dimension(rows, 24));
+  return true;
+}
+
+export function killTerminal(id: string, force = false): boolean {
+  const record = registry().get(id);
+  if (!record) return false;
+  if (record.cleanupTimer) clearTimeout(record.cleanupTimer);
+  registry().delete(id);
+  if (!record.exited) {
+    record.pty.kill(force ? "SIGKILL" : undefined);
+    // A shell may trap SIGHUP; explicit close and lease expiry must still finish.
+    if (!force) {
+      record.cleanupTimer = setTimeout(() => {
+        if (!record.exited) record.pty.kill("SIGKILL");
+      }, 2000);
+      record.cleanupTimer.unref?.();
+    }
+  }
+  emit(record, { type: "closed" });
+  record.listeners.clear();
+  return true;
 }

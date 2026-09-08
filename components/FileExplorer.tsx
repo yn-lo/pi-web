@@ -1099,7 +1099,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
       )}
 
       {!changesCollapsed && isGitRepository && (
-        <div style={{ padding: "0 4px 2px" }}>
+        <div id="pi-git-changes" style={{ padding: "0 4px 2px" }}>
           {gitFiles.length > 0 && (<>
           <div
             aria-label={t("files.changeStats", {

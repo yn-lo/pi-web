@@ -1,90 +1,77 @@
-import { isApiRequestAllowed } from "@/lib/request-security";
-import { getTerminalSession } from "@/lib/terminal-manager";
+import { hasTerminal, subscribeTerminal, type TerminalEvent } from "@/lib/terminal-manager";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
-const HEARTBEAT_INTERVAL_MS = 30_000;
-
-// GET /api/terminal/[id]/events - SSE stream of terminal output
-// Frames: { type: "connected", session } → { type: "data", data }* → { type: "exit", exitCode }
 export async function GET(
   req: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  if (!isApiRequestAllowed(req)) {
-    return new Response("Untrusted API request", { status: 403 });
-  }
-  if (req.signal.aborted) return new Response(null, { status: 204 });
-
   const { id } = await params;
-  const session = getTerminalSession(id);
-  if (!session || !session.isRunning) {
-    return new Response("Terminal not found", { status: 404 });
-  }
+  if (!hasTerminal(id)) return new Response("Terminal not found", { status: 404 });
+  const cursor = req.headers.get("last-event-id") ?? new URL(req.url).searchParams.get("after");
+  const after = cursor !== null && /^\d+$/.test(cursor) && Number.isSafeInteger(Number(cursor))
+    ? Number(cursor) : undefined;
 
-  // Captured by `start` so the stream's `cancel()` can tear down subscriptions.
-  let cancelStream: (closeController: boolean) => void = () => {};
-
+  let closeStream: (closeController: boolean) => void = () => {};
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       const encoder = new TextEncoder();
       let closed = false;
       let heartbeat: ReturnType<typeof setInterval> | null = null;
-      let unsubscribeData: (() => void) | null = null;
-      let unsubscribeExit: (() => void) | null = null;
-      let abortHandler: (() => void) | null = null;
-
+      let unsubscribe: (() => void) | null = null;
       const cleanup = (closeController: boolean) => {
         if (closed) return;
         closed = true;
-        if (heartbeat !== null) clearInterval(heartbeat);
-        unsubscribeData?.();
-        unsubscribeData = null;
-        unsubscribeExit?.();
-        unsubscribeExit = null;
-        if (abortHandler) req.signal.removeEventListener("abort", abortHandler);
+        if (heartbeat) clearInterval(heartbeat);
+        unsubscribe?.();
+        req.signal.removeEventListener("abort", abort);
         if (closeController) {
-          try { controller.close(); } catch { /* stream already closed */ }
+          try { controller.close(); } catch { /* already closed */ }
         }
       };
-      cancelStream = cleanup;
-
-      const enqueue = (data: unknown) => {
+      const abort = () => cleanup(true);
+      const send = (event: TerminalEvent) => {
         if (closed) return;
         try {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+          if ((controller.desiredSize ?? 0) <= 0) {
+            cleanup(true);
+            return;
+          }
+          const eventId = event.type === "output" ? `id: ${event.offset}\n` : "";
+          controller.enqueue(encoder.encode(`${eventId}data: ${JSON.stringify(event)}\n\n`));
+          if (event.type === "exit" || event.type === "closed") cleanup(true);
         } catch {
           cleanup(false);
         }
       };
-
-      abortHandler = () => cleanup(true);
-      if (req.signal.aborted) {
+      closeStream = cleanup;
+      const subscription = subscribeTerminal(id, send, after);
+      if (!subscription) {
         cleanup(true);
         return;
       }
-      req.signal.addEventListener("abort", abortHandler, { once: true });
-
-      unsubscribeData = session.subscribeData((data) => enqueue({ type: "data", data }));
-      unsubscribeExit = session.subscribeExit((exitCode) => {
-        enqueue({ type: "exit", exitCode });
-        // Give the browser a chance to read the exit frame before closing.
-        setTimeout(() => cleanup(true), 50);
-      });
-
-      enqueue({ type: "connected", session: session.toPublicInfo() });
+      unsubscribe = subscription.unsubscribe;
+      controller.enqueue(encoder.encode(":\n\n"));
+      send(subscription.output);
+      if (subscription.exited) send({ type: "exit", exitCode: subscription.exitCode ?? 0 });
+      if (closed) return;
+      req.signal.addEventListener("abort", abort, { once: true });
+      if (req.signal.aborted) {
+        abort();
+        return;
+      }
       heartbeat = setInterval(() => {
-        if (!closed) {
-          try { controller.enqueue(encoder.encode(":\n\n")); } catch { cleanup(false); }
-        }
-      }, HEARTBEAT_INTERVAL_MS);
+        try {
+          if ((controller.desiredSize ?? 0) <= 0) cleanup(true);
+          else if (!closed) controller.enqueue(encoder.encode(":\n\n"));
+        } catch { cleanup(false); }
+      }, 30_000);
     },
     cancel() {
-      // The request was closed by the client; only stop forwarding events.
-      // The shell itself keeps running so the terminal can reconnect later.
-      cancelStream(false);
+      closeStream(false);
     },
-  });
+  }, { highWaterMark: 256 * 1024, size: (chunk) => chunk.byteLength });
 
   return new Response(stream, {
     headers: {

@@ -1,325 +1,229 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { FitAddon } from "@xterm/addon-fit";
+import { Terminal } from "@xterm/xterm";
 import { useI18n } from "@/hooks/useI18n";
-import { useTheme } from "@/hooks/useTheme";
-import { useTerminal } from "@/hooks/useTerminal";
+import { createTerminalWriter, terminalRequest } from "@/lib/terminal-client";
+import type { TerminalEvent } from "@/lib/terminal-manager";
+import type { TerminalTab } from "./terminal-tab-state";
 
-const DARK_THEME = {
-  background: "#0d1117",
-  foreground: "#e6edf3",
-  cursor: "#e6edf3",
-  selectionBackground: "#264f78",
-  black: "#484f58",
-  red: "#ff7b72",
-  green: "#3fb950",
-  yellow: "#d29922",
-  blue: "#58a6ff",
-  magenta: "#bc8cff",
-  cyan: "#39c5cf",
-  white: "#b1bac4",
-  brightBlack: "#6e7681",
-  brightRed: "#ffa198",
-  brightGreen: "#56d364",
-  brightYellow: "#e3b341",
-  brightBlue: "#79c0ff",
-  brightMagenta: "#d2a8ff",
-  brightCyan: "#56d4dd",
-  brightWhite: "#f0f6fc",
-};
-
-const LIGHT_THEME = {
-  background: "#ffffff",
-  foreground: "#1f2328",
-  cursor: "#1f2328",
-  selectionBackground: "#b2d7f8",
-  red: "#cf222e",
-  green: "#116329",
-  yellow: "#9a6700",
-  blue: "#0969da",
-  magenta: "#8250df",
-  cyan: "#1b7c83",
-  white: "#6e7781",
-  brightRed: "#82071e",
-  brightGreen: "#116329",
-  brightYellow: "#4d2d00",
-  brightBlue: "#0969da",
-  brightMagenta: "#8250df",
-  brightCyan: "#1b7c83",
-  brightWhite: "#6e7781",
-};
-
-const HEADER_HEIGHT = 30;
-const DRAG_HANDLE_HEIGHT = 5;
-const MIN_PANEL_HEIGHT = 110;
-const MAX_PANEL_HEIGHT = 640;
-
-interface TerminalPanelProps {
-  cwd: string;
-  onClose: () => void;
-  /** When set, the panel fills its parent and the internal drag-resize is
-      disabled; the owning tab bar controls the height (multi-terminal mode). */
-  fillHeight?: boolean;
+interface Props {
+  tab: TerminalTab;
+  active: boolean;
+  onRestart: () => void;
+  onClosed: () => void;
+  onCloseError: () => void;
 }
 
-// Loaded lazily so the xterm library is never evaluated during server-side
-// prerender of the home page (xterm references the browser-only `self` global).
-let loadXterm: (() => Promise<{
-  Terminal: typeof import("@xterm/xterm").Terminal;
-  FitAddon: typeof import("@xterm/addon-fit").FitAddon;
-}>) | null = null;
-async function getXterm() {
-  if (!loadXterm) {
-    const xterm = await import("@xterm/xterm");
-    const fit = await import("@xterm/addon-fit");
-    await import("@xterm/xterm/css/xterm.css");
-    loadXterm = () => Promise.resolve({ Terminal: xterm.Terminal, FitAddon: fit.FitAddon });
-  }
-  return loadXterm();
-}
-
-export function TerminalPanel({ cwd, onClose, fillHeight = false }: TerminalPanelProps) {
+export function TerminalPanel({ tab, active, onRestart, onClosed, onCloseError }: Props) {
   const { t } = useI18n();
-  const { isDark } = useTheme();
+  const { id, cwd, restored } = tab;
   const containerRef = useRef<HTMLDivElement>(null);
-  // Note: `typeof import(...)` below is a compile-time-only type query; it does
-  // not trigger a runtime import, so it cannot load xterm during prerender.
-  const termRef = useRef<InstanceType<typeof import("@xterm/xterm").Terminal> | null>(null);
-  const fitAddonRef = useRef<InstanceType<typeof import("@xterm/addon-fit").FitAddon> | null>(null);
-  const { session, status, error, open, write, resize, close } = useTerminal();
-  const cwdRef = useRef(cwd);
-  const [height, setHeight] = useState(240);
+  const terminalRef = useRef<Terminal | null>(null);
+  const startRef = useRef<Promise<void>>(Promise.resolve());
+  const writerRef = useRef<ReturnType<typeof createTerminalWriter> | null>(null);
+  const callbacksRef = useRef({ onClosed, onCloseError });
+  callbacksRef.current = { onClosed, onCloseError };
+  const [status, setStatus] = useState<"connecting" | "ready" | "exited" | "error">("connecting");
+  const [error, setError] = useState<string | null>(null);
+  const [exitCode, setExitCode] = useState<number | null>(null);
+  const [reconnectKey, setReconnectKey] = useState(0);
 
-  // Create the xterm instance and shell together; tear both down on unmount.
   useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-
+    const container = containerRef.current;
+    if (!container) return;
     let disposed = false;
-    // Set inside getXterm().then(); disposed on unmount. Make it a let so the
-    // cleanup closure can both assign and read it (untyped var assigned later).
-    let onDataSubscription: { dispose: () => void } | null | undefined;
+    let events: EventSource | null = null;
+    let offset: number | undefined;
+    let connected = false;
+    let exited = false;
+    let inputFailed = false;
+    setStatus("connecting");
+    setError(null);
+    setExitCode(null);
 
-    // fitCurrent is set once xterm loads; the resize listener / ResizeObserver
-    // below call it on every resize and are registered synchronously so they are
-    // always cleaned up on unmount, even if the async xterm load has not resolved yet.
-    const fitCurrent = () => {
-      const fit = fitAddonRef.current;
-      if (!fit || disposed) return;
-      try {
-        fit.fit();
-      } catch {
-        return;
-      }
-      const dims = fit.proposeDimensions();
-      if (dims) void resize(dims.cols, dims.rows);
-    };
-
-    const observer = new ResizeObserver(fitCurrent);
-    observer.observe(el);
-    window.addEventListener("resize", fitCurrent);
-
-    let cancelled = false;
-    void getXterm().then(({ Terminal, FitAddon }) => {
-      if (cancelled) return;
-
-      const term = new Terminal({
-        cursorBlink: true,
-        fontSize: 13,
-        lineHeight: 1.25,
-        fontFamily:
-          'var(--font-mono), "Cascadia Mono", Menlo, Consolas, "Courier New", monospace',
-        theme: { ...(isDark ? DARK_THEME : LIGHT_THEME) },
-        scrollback: 3000,
-      });
-      const fit = new FitAddon();
-      term.loadAddon(fit);
-      term.open(el);
-      termRef.current = term;
-      fitAddonRef.current = fit;
-
-      // Keep the onData subscription for explicit disposal on unmount. Even
-      // though term.dispose() normally tears down internals, disposing the
-      // returned IDisposable guarantees the handler never fires into the
-      // closed-over `write` after the panel is gone.
-      onDataSubscription = term.onData((data) => {
-        void write(data);
-      });
-
-      const initialDims = fit.proposeDimensions();
-      void open(cwdRef.current, initialDims?.cols, initialDims?.rows, {
-        onData: (chunk) => {
-          if (!disposed) term.write(chunk);
-        },
-        onExit: (exitCode) => {
-          if (disposed) return;
-          term.write(`\r\n\x1b[90m${t("terminal.exited", { code: exitCode })}\x1b[0m\r\n`);
-        },
-      });
-
-      // Keep the resize path bound to this fit instance so the synchronously
-      // registered listener/observer above pick it up correctly.
-      fitCurrent();
+    const terminal = new Terminal({
+      cursorBlink: true,
+      fontFamily: getComputedStyle(container).getPropertyValue("--font-mono").trim() || "monospace",
+      fontSize: 13,
+      lineHeight: 1.25,
+      scrollback: 8000,
+      screenReaderMode: true,
+      disableStdin: true,
+      theme: {
+        background: "#111318", foreground: "#d7dce5", cursor: "#60a5fa",
+        selectionBackground: "#365b8a",
+        black: "#1d222b", red: "#f87171", green: "#4ade80", yellow: "#facc15",
+        blue: "#60a5fa", magenta: "#c084fc", cyan: "#22d3ee", white: "#e5e7eb",
+        brightBlack: "#6b7280", brightRed: "#fca5a5", brightGreen: "#86efac",
+        brightYellow: "#fde047", brightBlue: "#93c5fd", brightMagenta: "#d8b4fe",
+        brightCyan: "#67e8f9", brightWhite: "#ffffff",
+      },
+    });
+    terminalRef.current = terminal;
+    const fit = new FitAddon();
+    terminal.loadAddon(fit);
+    terminal.open(container);
+    terminal.attachCustomKeyEventHandler((event) => {
+      if (event.type !== "keydown") return true;
+      const key = event.key.toLowerCase();
+      if ((event.ctrlKey || event.metaKey) && key === "v") return false;
+      if ((event.ctrlKey || event.metaKey) && key === "c" && terminal.hasSelection()) return false;
+      return true;
     });
 
+    const writer = createTerminalWriter(id, (reason) => {
+      if (disposed) return;
+      inputFailed = true;
+      terminal.options.disableStdin = true;
+      setError(reason.message);
+      setStatus("error");
+    });
+    writerRef.current = writer;
+    const onData = terminal.onData((data) => {
+      if (connected && !exited && !inputFailed) writer.write(data);
+    });
+    const fitAndResize = () => {
+      if (!container.offsetWidth || !container.offsetHeight) return;
+      fit.fit();
+    };
+    const onResize = terminal.onResize(({ cols, rows }) => {
+      if (connected && !exited && !inputFailed) writer.resize(cols, rows);
+    });
+    const resizeObserver = new ResizeObserver(fitAndResize);
+    resizeObserver.observe(container);
+
+    const connect = () => {
+      if (disposed || exited || !navigator.onLine) return;
+      events?.close();
+      events = new EventSource(`/api/terminal/${encodeURIComponent(id)}/events${offset === undefined ? "" : `?after=${offset}`}`);
+      events.onmessage = (message) => {
+        const event = JSON.parse(message.data) as TerminalEvent;
+        if (event.type === "output") {
+          if (event.reset) terminal.reset();
+          else if (offset !== undefined && event.offset <= offset) return;
+          terminal.write(event.data);
+          offset = event.offset;
+        } else {
+          exited = true;
+          connected = false;
+          terminal.options.disableStdin = true;
+          events?.close();
+          setExitCode(event.type === "exit" ? event.exitCode : null);
+          setStatus("exited");
+        }
+      };
+      events.onopen = () => {
+        connected = true;
+        if (inputFailed) return;
+        terminal.options.disableStdin = false;
+        setStatus("ready");
+        fitAndResize();
+        writer.resize(terminal.cols, terminal.rows);
+        if (container.offsetWidth && container.offsetHeight) terminal.focus();
+      };
+      events.onerror = () => {
+        if (disposed || exited) return;
+        connected = false;
+        terminal.options.disableStdin = true;
+        setStatus(events?.readyState === EventSource.CLOSED ? "error" : "connecting");
+      };
+    };
+
+    startRef.current = (async () => {
+      fitAndResize();
+      if (restored || reconnectKey > 0) {
+        // Restoring a tab must never silently launch a replacement shell.
+        await terminalRequest(`/api/terminal/${encodeURIComponent(id)}`);
+      } else {
+        await terminalRequest("/api/terminal", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id, cwd, cols: terminal.cols, rows: terminal.rows }),
+        });
+      }
+      connect();
+    })().catch((reason: Error) => {
+      if (disposed) return;
+      setError(reason.message);
+      setStatus("error");
+    });
+
+    const pageHide = () => {
+      connected = false;
+      terminal.options.disableStdin = true;
+      events?.close();
+      if (!exited && !inputFailed) setStatus("connecting");
+    };
+    const pageShow = (event: PageTransitionEvent) => { if (event.persisted) connect(); };
+    window.addEventListener("pagehide", pageHide);
+    window.addEventListener("pageshow", pageShow);
+    window.addEventListener("offline", pageHide);
+    window.addEventListener("online", connect);
     return () => {
-      cancelled = true;
       disposed = true;
-      // Detach the onData handler first so it can never fire after teardown.
-      onDataSubscription?.dispose();
-      onDataSubscription = null;
-      observer.disconnect();
-      window.removeEventListener("resize", fitCurrent);
-      // Tear down anything that xterm load created (if it resolved before unmount).
-      const term = termRef.current;
-      termRef.current = null;
-      if (term) {
-        try { term.dispose(); } catch { /* already gone */ }
-      }
-      if (fitAddonRef.current) {
-        try { fitAddonRef.current.dispose(); } catch { /* already gone */ }
-        fitAddonRef.current = null;
-      }
-      void close();
+      events?.close();
+      void writer.stop();
+      resizeObserver.disconnect();
+      onData.dispose();
+      onResize.dispose();
+      window.removeEventListener("pagehide", pageHide);
+      window.removeEventListener("pageshow", pageShow);
+      window.removeEventListener("offline", pageHide);
+      window.removeEventListener("online", connect);
+      terminal.dispose();
+      terminalRef.current = null;
     };
-    // Mount-time only: the shell keeps running in its original cwd even if the
-    // active project changes, and reopening the panel starts a fresh session.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [id, cwd, restored, reconnectKey]);
 
-  // Keep xterm colors in sync with the app theme.
   useEffect(() => {
-    const term = termRef.current;
-    if (!term) return;
-    term.options.theme = { ...(isDark ? DARK_THEME : LIGHT_THEME) };
-  }, [isDark]);
+    if (active) terminalRef.current?.focus();
+  }, [active]);
 
-  // Focus the terminal whenever the panel is shown.
   useEffect(() => {
-    termRef.current?.focus();
-  }, [status]);
-
-  // Drag the top handle to resize the panel height.
-  const handleDrag = (e: React.PointerEvent<HTMLDivElement>) => {
-    const startY = e.clientY;
-    const startHeight = height;
-    const onPointerMove = (moveEvent: PointerEvent) => {
-      setHeight(Math.min(
-        MAX_PANEL_HEIGHT,
-        Math.max(MIN_PANEL_HEIGHT, startHeight - (moveEvent.clientY - startY)),
-      ));
-    };
-    const onPointerUp = () => {
-      window.removeEventListener("pointermove", onPointerMove);
-      window.removeEventListener("pointerup", onPointerUp);
-    };
-    window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("pointerup", onPointerUp);
-  };
-
-  const statusLine = status === "starting"
-    ? t("terminal.starting")
-    : status === "error"
-      ? `✕ ${error ?? t("terminal.startError")}`
-      : null;
+    if (!tab.closing) return;
+    let cancelled = false;
+    if (terminalRef.current) terminalRef.current.options.disableStdin = true;
+    void (async () => {
+      await startRef.current;
+      await writerRef.current?.stop();
+      await terminalRequest(`/api/terminal/${encodeURIComponent(id)}`, { method: "DELETE", keepalive: true });
+      if (!cancelled) callbacksRef.current.onClosed();
+    })().catch((reason: Error) => {
+      if (cancelled) return;
+      setError(reason.message);
+      setStatus("error");
+      callbacksRef.current.onCloseError();
+    });
+    return () => { cancelled = true; };
+  }, [id, tab.closing]);
 
   return (
-    <div
-      style={{
-        flexGrow: fillHeight ? 1 : 0,
-        flexShrink: fillHeight ? 1 : 0,
-        height: fillHeight ? "100%" : height,
-        minHeight: 0,
-        display: "flex",
-        flexDirection: "column",
-        background: isDark ? DARK_THEME.background : "#ffffff",
-        borderTop: fillHeight ? "none" : "1px solid var(--border)",
-        position: "relative",
-      }}
-    >
-      {/* Drag handle (standalone mode only — the tab bar owns resizing) */}
-      {!fillHeight && (
-      <div
-        onPointerDown={handleDrag}
-        style={{
-          position: "absolute",
-          top: -DRAG_HANDLE_HEIGHT,
-          left: 0,
-          right: 0,
-          height: DRAG_HANDLE_HEIGHT,
-          cursor: "ns-resize",
-          touchAction: "none",
-        }}
-        title={t("layout.resizeHint")}
-      />
-      )}
-      {/* Header */}
-      <div
-        style={{
-          height: HEADER_HEIGHT,
-          flexShrink: 0,
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          padding: "0 4px 0 12px",
-          fontSize: 12,
-          color: isDark ? "#8b949e" : "#57606a",
-          borderBottom: "1px solid var(--border)",
-          userSelect: "none",
-        }}
-      >
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0 }}>
-          <polyline points="4 17 10 11 4 5" />
-          <line x1="12" y1="19" x2="20" y2="19" />
-        </svg>
-        <span style={{ fontWeight: 500, color: isDark ? "#e6edf3" : "#1f2328", whiteSpace: "nowrap" }}>
-          {t("terminal.title", { shell: session?.shellLabel ?? "bash" })}
-        </span>
-        {session && (
-          <span
-            style={{
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-              fontFamily: "var(--font-mono)",
-              fontSize: 11,
-              minWidth: 0,
-            }}
-            title={session.cwd}
-          >
-            {t("terminal.path", { path: session.cwd })}
-          </span>
+    <section className="terminal-panel" aria-label={t("terminal.title")}>
+      <header className="terminal-panel-header">
+        <div className="terminal-panel-path">
+          <span className={`terminal-status-dot is-${status}`} title={t(`terminal.${status}`)} />
+          <span title={cwd}>{cwd}</span>
+        </div>
+        {status === "error" && (
+          <button type="button" onClick={() => setReconnectKey((key) => key + 1)} disabled={Boolean(tab.closing)} title={t("terminal.reconnect")} aria-label={t("terminal.reconnect")}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-2 2M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l2-2" />
+            </svg>
+          </button>
         )}
-        {statusLine && (
-          <span style={{ marginLeft: "auto", color: status === "error" ? "#dc2626" : "var(--text-muted)", whiteSpace: "nowrap" }}>
-            {statusLine}
-          </span>
-        )}
-        <button
-          type="button"
-          onClick={onClose}
-          title={t("terminal.close")}
-          aria-label={t("terminal.close")}
-          style={{
-            display: "flex", alignItems: "center", justifyContent: "center",
-            width: 28, height: 26, padding: 0, marginLeft: "auto",
-            background: "none", border: "none", borderRadius: 4,
-            color: isDark ? "#8b949e" : "#57606a", cursor: "pointer", flexShrink: 0,
-            transition: "color 0.12s, background 0.12s",
-          }}
-          onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; e.currentTarget.style.color = isDark ? "#e6edf3" : "#1f2328"; }}
-          onMouseLeave={(e) => { e.currentTarget.style.background = "none"; e.currentTarget.style.color = isDark ? "#8b949e" : "#57606a"; }}
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-            <line x1="5" y1="5" x2="19" y2="19" />
-            <line x1="19" y1="5" x2="5" y2="19" />
+        <button type="button" onClick={onRestart} disabled={Boolean(tab.closing)} title={t("terminal.restart")} aria-label={t("terminal.restart")}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M20 11a8 8 0 1 0-2.34 5.66" /><polyline points="20 4 20 11 13 11" />
           </svg>
         </button>
+      </header>
+      <div>
+        {error && <div className="terminal-panel-error" role="alert">{error}</div>}
+        {status === "exited" && <div className="terminal-panel-exit" role="status">{exitCode === null ? t("terminal.exited") : t("terminal.exitCode", { code: exitCode })}</div>}
       </div>
-      {/* Terminal surface */}
-      <div style={{ flex: 1, overflow: "hidden", padding: "4px 0 0 8px" }}>
-        <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
-      </div>
-    </div>
+      <div className="terminal-xterm"><div ref={containerRef} className="terminal-xterm-host" /></div>
+    </section>
   );
 }

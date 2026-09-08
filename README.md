@@ -15,54 +15,64 @@
 - **网页配置**：无需离开 Pi Web，即可管理 Provider 登录和 API Key、模型、模型测试、插件包及技能。
 - **英文、简体中文和繁体中文界面**：Pi Web 首次打开时跟随浏览器语言，也可从顶部栏切换语言。
 
-## 快速开始（本地）
+## 本项目相对源项目（upstream）的增强
 
-Pi Web 要求 Node.js 22.19.0 或更高版本。先用 `node --version` 检查版本，然后运行：
+本仓库 fork 自 [agegr/pi-web](https://github.com/agegr/pi-web)，在源项目基础上额外提供以下能力（同一功能以源项目实现为准，fork 独有能力保留）：
+
+- **Git 工作流深度集成**：侧边栏内联的 Git 状态、暂存与提交操作，并支持由模型**自动生成提交信息**（`git commit` 界面一键填充 conventional-commit 风格消息）。相关文件：`app/api/git/*`、`lib/commit-message.ts`。
+- **目录管理**：在文件浏览器中**新建、重命名、删除目录**，并支持**在系统文件管理器中打开**选中目录。相关文件：`app/api/cwd/operations/*`、`components/DirectoryPicker.tsx`、`app/api/files/*`。
+- **远程服务器控制（systemd 部署）**：把 Pi Web 作为「网页 AI 控制服务器」部署到 Linux 服务器，通过浏览器远程管理；提供现成的 `deploy/` 启动脚本、`.env` 模板与 Basic Auth 认证。详见下文「远程控制服务器」。
+- **受限远程主机支持**：对不受信任/远程工作目录的识别与隔离（`lib/is-remote-host.ts`）。
+
+其余说明与源项目保持一致，请同时阅读下方通用章节。
+
+## 快速开始（本仓库，本地开发）
+
+本仓库主要通过 **fork 后自行部署**使用，不对外发布 npm 包。需要 Node.js 22.19.0 或更高版本，先用 `node --version` 检查：
 
 ```bash
-npx @agegr/pi-web@latest
+git clone https://github.com/yn-lo/pi-web.git
+cd pi-web
+npm install
+npm run dev
 ```
 
 服务就绪后，命令行会尝试自动打开浏览器。如果没有打开，请访问 [http://127.0.0.1:30141](http://127.0.0.1:30141)。Pi Web 默认仅监听 `127.0.0.1`。
 
 如果尚未配置模型 Provider，请打开**模型（Models）**面板登录或添加 API Key。
 
-如需全局安装 `pi-web` 命令：
+仅安装前端与开发依赖够用时，也可直接用 `npm run build && npm run start` 以生产模式运行（见下文「开发」）。
 
-```bash
-npm install -g @agegr/pi-web@latest
-pi-web
-```
-
-更新前先用 `Ctrl+C` 停止正在运行的进程，再次执行同一条安装命令。卸载时运行 `npm uninstall -g @agegr/pi-web`。
+> 说明：本仓库不再提供 `npx @agegr/pi-web` 式的全局一键启动；需要源项目包方式安装时，请使用上游发布版。
 
 ## 配置
 
-端口和主机名以命令行参数为准，优先于对应的环境变量。`--no-open` 与 `PI_WEB_NO_OPEN=1` 中任意一个都会关闭自动打开浏览器。运行 `pi-web --help`（或 `-h`）可打印启动选项并退出，未知选项会报错退出。
+端口和主机名可同时由命令行参数与环境变量指定，命令行参数优先于对应的环境变量。`--no-open` 与 `PI_WEB_NO_OPEN=1` 中任意一个都会关闭自动打开浏览器。
 
 | 参数或环境变量 | 用途 | 默认值 |
 | --- | --- | --- |
-| `--help`、`-h` | 打印启动选项并退出 | — |
 | `--port <端口>`、`-p <端口>` 或 `PORT` | 服务端口 | `30141` |
 | `--hostname <主机>`、`-H <主机>` 或 `PI_WEB_HOSTNAME` | 监听主机名 | `127.0.0.1` |
 | `--no-open` 或 `PI_WEB_NO_OPEN=1` | 不自动打开浏览器 | 自动打开 |
 | `PI_WEB_SKIP_VERSION_CHECK=1` | 关闭 Pi Web 更新检查 | 不关闭 |
 | `PI_WEB_ALLOWED_HOSTS` | 额外允许的代理或自定义主机名，多个值用逗号分隔，必须精确匹配 | 未设置 |
-| `PI_WEB_PASSWORD` | 启用 HTTP Basic Auth，用户名固定为 `pi` | 不启用认证 |
+| `PI_WEB_PASSWORD` | 启用 HTTP Basic Auth，用户名固定为 `pi`（上游包；本仓库另支持 `PI_WEB_USERNAME`） | 不启用认证 |
+| `PI_WEB_IDLE_TIMEOUT_MS` | 会话空闲超时（毫秒），最大 `2147483647`；`0` 关闭空闲关闭；非法或越界值使用默认值 | `600000`（10 分钟） |
 
-例如：
+例如（本仓库通过 npm 脚本启动，端口/主机名由脚本固定）：
 
 ```bash
-pi-web --help
-pi-web -p 8080 -H 0.0.0.0 --no-open
+npm run dev            # 开发模式，监听 127.0.0.1:30141
+npm run dev:lan        # 开发模式，监听 0.0.0.0:30141（LAN/远程访问）
+npm run start:lan      # 生产模式，监听 0.0.0.0:30141
 ```
 
 ### 远程访问
 
-监听非回环地址会暴露一个可执行高权限操作的智能体。在可信局域网中使用时，请设置足够长的随机密码：
+监听非回环地址会暴露一个可执行高权限操作的智能体。在可信局域网中使用时，请设置足够长的随机密码（上游包对应 `pi-web --hostname 0.0.0.0`，本仓库使用 `npm run dev:lan` 或 `npm run start:lan`，密码通过环境变量传入见下）：
 
 ```bash
-PI_WEB_PASSWORD='足够长的随机密码' pi-web --hostname 0.0.0.0
+PI_WEB_PASSWORD='足够长的随机密码' npm run start:lan
 ```
 
 Basic Auth 不会加密传输中的密码。不要通过明文 HTTP 将 Pi Web 暴露到互联网；远程访问应使用可信反向代理提供 HTTPS，或通过可信 VPN。如果反向代理传递外部主机名，请把该名称精确加入 `PI_WEB_ALLOWED_HOSTS`。这个白名单不会改变 Pi Web 的监听地址。
@@ -141,7 +151,7 @@ macOS 或 Linux：
 HTTP_PROXY=http://127.0.0.1:7890 \
 HTTPS_PROXY=http://127.0.0.1:7890 \
 NO_PROXY=localhost,127.0.0.1 \
-npx @agegr/pi-web@latest
+npm run dev
 ```
 
 Windows PowerShell：
@@ -150,7 +160,7 @@ Windows PowerShell：
 $env:HTTP_PROXY = "http://127.0.0.1:7890"
 $env:HTTPS_PROXY = "http://127.0.0.1:7890"
 $env:NO_PROXY = "localhost,127.0.0.1"
-npx @agegr/pi-web@latest
+npm run dev
 ```
 
 ## 注意事项
@@ -177,6 +187,30 @@ window.addEventListener("pi-web:session-row-contextmenu", (event) => {
 ```
 
 `detail` 对象包含 `id`、`path`、`cwd`、可选的 `name`、指针坐标，以及一个用于会话列表变更后的 `refresh()` 回调。若没有监听者取消该扩展事件，Pi Web 保留浏览器原生右键菜单。此钩子位于浏览器侧，独立于 Pi agent 扩展。
+
+### Extension Session Liveness（扩展会话保活）
+
+Server-side Pi extensions with detached work can prevent automatic idle
+session eviction through the versioned global registry:
+
+```js
+const liveness = globalThis[Symbol.for("@agegr/pi-web/session-liveness/v1")];
+const release = liveness?.version === 1
+  ? liveness.register({
+      name: "my-extension",
+      sessionId,
+      sessionFile: sessionFile || undefined,
+      isActive: () => detachedJobs.size > 0,
+    })
+  : () => {};
+```
+
+Register once per active extension session and call the returned idempotent
+`release` function on session shutdown, replacement, or reload. `isActive`
+must be synchronous, cheap, and scoped to the supplied exact session id or
+file. Provider errors fail safe by preserving that session. This lease only
+affects automatic idle eviction; explicit shutdown and Stop fallback cleanup
+still take precedence.
 
 ## 开发
 
